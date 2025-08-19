@@ -36,6 +36,8 @@ Modest R-squared values indicate that many other factors, such as public health 
 
 To reproduce the analysis, clone the repository and open notebooks/SocialFactors_COVID.Rmd in RStudio.
 
+Download the original CDC SVI data from the official portal. Link available in 'data' folder.
+
 Cleaned datasets (clean_states.csv, clean_counties.csv) are included for convenience.
 
 Original raw datasets were provided as part of a course assignment. Equivalent public datasets are available from the CDC SVI and public COVID-19 trackers.
