@@ -22,7 +22,7 @@ This project makes use of the Social Vulnerability Index (SVI) data from the CDC
 Data was downloaded for the year of 2020. Social factors include total populations,
 unemployment populations, minority populations, and many more. 
 
-More detailed descriptions of variables can be found here: [SVI Data](https://svi.cdc.gov/map/)
+More detailed descriptions of variables can be found here: [SVI Data](https://www.atsdr.cdc.gov/place-health/php/svi/svi-interactive-map.html)
 
 I will be using the `us-states` and `us-counties-all` data to supplement the 
 number of COVID cases in my analysis.
