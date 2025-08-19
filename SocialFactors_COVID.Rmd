@@ -1,0 +1,409 @@
+---
+title: "Social Factors of 2020 COVID-19 Incidence Rates"
+output: pdf_document
+---
+
+# Introduction
+
+In 2020, the COVID-19 pandemic exposed significant disparities in how different communities were affected, raising important questions about the role of social vulnerabilities in shaping public health outcomes. 
+
+The goal of this project is to explore two questions:
+
+1. What social factors are most correlated to state-level incidence rates of 
+COVID-19 in 2020?
+
+2. Are those social factors still important on more granular (i.e. county) levels?
+
+**Why should you care?**
+
+The findings from this project could provide actionable insights for policymakers, public health officials, and researchers. Understanding which social factors most strongly correlate with COVID-19 incidence can help prioritize resource allocation in future health crises, inform interventions to protect our most vulnerable populations, and form deeper understanding of the relationship between social structures and public health.
+
+This project makes use of the Social Vulnerability Index (SVI) data from the CDC.
+Data was downloaded for the year of 2020. Social factors include total populations,
+unemployment populations, minority populations, and many more. 
+
+More detailed descriptions of variables can be found here: [SVI Data](https://svi.cdc.gov/map/)
+
+I will be using the `us-states` and `us-counties-all` data to supplement the 
+number of COVID cases in my analysis.
+
+The project will involve three main steps:
+
+* Perform a correlation analysis on state-level data to find which social factors
+appear to be most important.
+
+* Perform a multi-regression analysis to control for the effects of other variables.
+
+* Examine if these factors still hold a strong effect on the county-level by doing
+another correlation analysis.
+
+
+# Analysis
+
+## Data Cleaning and Prepartion
+
+Here are all packages used in this project:
+
+```{r echo=TRUE, message=FALSE}
+library(tidyverse) # For basic data manipulation.
+library(lubridate) # To easily sort by date.
+library(readr)     # To read in .csv files.
+library(maps)      # To create a choropleth map visualization.
+library(patchwork) # To patch our maps together.
+library(knitr)     # To neatly display data.
+```
+
+To prepare our data, we first want to filter our state-level COVID data to only represent
+total cases for the year of 2020. 
+
+Since the SVI data is by county, we also need to aggregate it so that it is by state.
+
+Then, we can merge them into one tibble, which will then be used for our analysis.
+
+```{r State Data Cleaning and Preparation, message=FALSE}
+
+# Load in our datasets.
+
+covid <- read_csv("us-states.csv")   
+svi <- read_csv("svi_interactive_map_2020.csv")      
+
+# Filter the COVID data for cases in 2020 only, then pick the totals (end of year).
+
+covid_2020 <- covid %>%
+  filter(year(date) == 2020)
+
+covid_2020 <- covid_2020 %>%
+  group_by(state) %>%
+  filter(date == max(date)) %>%
+  ungroup()
+
+# Aggregating the SVI data to be grouped by state instead of by county.
+
+svi_state_data <- svi %>%
+  group_by(STATE) %>%
+  summarise(
+    across(where(is.double), ~ sum(.x, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+# To merge easily by state, lower-case the SVI columns to match the COVID file's columns.
+
+colnames(svi_state_data) <- tolower(colnames(svi_state_data))
+
+# Creating our combined dataset.
+
+covid_states <- covid_2020 %>%
+  left_join(svi_state_data, by = "state")
+
+# Creating a column for incidence rates by state. 
+
+covid_states <- covid_states %>%
+  dplyr::mutate(IncidenceRate = (cases / e_totpop) * 100)
+```
+
+
+```{r StateDataTable, knitr::kable, echo=FALSE}
+
+knitr::kable(covid_states[1:5, 1:10],
+             caption = "Final State-Level COVID dataset.",
+             digits=2) 
+
+```
+
+Note: Only the first few out of 185 columns are shown here.
+
+## State-Level Correlation and Multi-Regression Analysis
+
+```{r StateCorrelationAnalysis, warning=FALSE}
+
+# Creating percentages of population for relevant columns.
+
+# It should be noted, the SVI data has percentage columns for their data already.
+# However, the percentages are for each county, not state. The logic I use below is a simple
+# way of getting percentages by state.
+
+covid_states <- covid_states %>%
+  mutate(across(starts_with("e_"), ~ (.x / e_totpop) * 100, .names = "pct_{.col}"))
+
+# Selecting the percentages and our IncidenceRate column to analyze.
+
+correlation_data <- covid_states %>%
+  dplyr::select(IncidenceRate, starts_with("pct_"))
+
+# Calculating the correlation matrix.
+
+correlation_matrix <- cor(correlation_data, use = "pairwise.complete.obs")
+
+# To see our strongest correlations, we'll now take the matrix data and turn it
+# into a table which we can easily sort and display.
+
+correlation_long <- as.data.frame(as.table(correlation_matrix))
+top_correlations <- correlation_long %>%
+  filter(Var1 == "IncidenceRate" & Var2 != "IncidenceRate") %>%
+  arrange(desc(abs(Freq))) %>%  
+  slice_head(n = 10)  
+```
+
+
+```{r StateCorrTable, knitr::kable, echo=FALSE}
+
+knitr::kable(top_correlations[1:10, 1:3],
+             caption = "Top 10 State-Level Correlations to Incidence Rates",
+             digits=2) 
+```
+**The three strongest positive correlations with COVID-19 incidence rates are**
+
+`pct_e_age17`: Estimated percentage of the population aged 17 and below.
+
+`pct_e_aian`: Estimated percentage of the population identifying as American Indian/Alaska Native.
+
+`pct_e_uninsur`: Estimated percentage of the population without health insurance.
+
+**The three strongest negative correlations are**
+
+`pct_e_hburd`: Estimated percentage of households with high housing cost burdens.
+
+`pct_e_asian`: Estimated percentage of the population identifying as Asian.
+
+`pct_e_twomore`: Estimated percentage of the population identifying as two or more races.
+
+To further explore these relationships, I will construct multiple regression models for the top positive and negative factors. These models will help us determine whether the identified factors remain significant predictors of COVID-19 incidence rates when controlling for the effects of other variables.
+
+
+```{r StateRegressionModels, warning=FALSE}
+pos_model <- lm(IncidenceRate ~ pct_e_age17 + pct_e_aian + pct_e_uninsur ,data = covid_states)
+neg_model <- lm(IncidenceRate ~ pct_e_hburd + pct_e_asian + pct_e_twomore ,data = covid_states)
+```
+
+```{r PosRegressionResults, knitr::kable, echo=FALSE}
+
+# Extracting coefficients and r-squared values for positive-correlation regression model.
+
+pos_coefficients <- summary(pos_model)$coefficients
+pos_coeff_df <- as.data.frame(pos_coefficients)
+pos_coeff_df$Term <- rownames(pos_coefficients)
+rownames(pos_coeff_df) <- NULL
+
+pos_r_squared <- summary(pos_model)$r.squared
+pos_adj_r_squared <- summary(pos_model)$adj.r.squared
+
+
+pos_coeff_df <- pos_coeff_df[, c("Term", "Estimate", "Std. Error", "Pr(>|t|)")]
+
+# Putting it into a table.
+
+knitr::kable(
+  pos_coeff_df,
+  col.names = c("Term", "Estimate", "Std. Error", "P-value"),
+  caption = sprintf("Regression Coefficients for Positive Factors
+                    
+                    (R-squared = %.3f, Adj R-squared = %.3f)", 
+                    pos_r_squared, pos_adj_r_squared))
+
+# Including a residuals vs. fitted plot.
+plot(pos_model, which = 1, main = "Positive-Correlation Factors - Residuals vs Fitted")
+```
+
+
+```{r NegRegressionResults, knitr::kable, echo=FALSE}
+
+# Doing the same thing for the negative-correlation regression model. 
+
+neg_coefficients <- summary(neg_model)$coefficients
+neg_coeff_df <- as.data.frame(neg_coefficients)
+neg_coeff_df$Term <- rownames(neg_coefficients)
+rownames(neg_coeff_df) <- NULL
+
+neg_r_squared <- summary(neg_model)$r.squared
+neg_adj_r_squared <- summary(neg_model)$adj.r.squared
+
+
+neg_coeff_df <- neg_coeff_df[, c("Term", "Estimate", "Std. Error", "Pr(>|t|)")]
+
+knitr::kable(
+  neg_coeff_df,
+  col.names = c("Term", "Estimate", "Std. Error", "P-value"),
+  caption = sprintf("Regression Coefficients for Negative Factors
+                    
+                    (R-squared = %.3f, Adj R-squared = %.3f)", 
+                    neg_r_squared, neg_adj_r_squared)
+)
+
+plot(neg_model, which = 1, main = "Negative-Correlation Factors - Residuals vs Fitted")
+
+```
+
+
+### Positive Correlations Regression
+
+`pct_e_age17`: This variable has a positive coefficient of 0.65, meaning that for every 1% increase in the population under 17, the incidence rate increases by 0.65%. This factor is the only statistically significant one from our analysis (p-value < 0.001), indicating it is a strong predictor. 
+
+The residuals graph shows the difference between observed and predicted incidence rates.
+A random scatter of residuals around zero suggests the model is appropriate for the data.
+Here, the residuals do not show strong patterns, indicating that the model assumptions (linearity, homoscedasticity) are mostly satisfied. However, some outliers call for further investigation.
+
+These results suggest that younger populations likely contribute to higher COVID-19 incidence rates, potentially due to higher mobility, group interactions, or larger household sizes.
+
+### Negative Correlations Regression
+
+`pct_e_hburd`: This variable has a significant negative coefficient (-0.98), meaning that for every 1% increase in households with high housing burdens, the incidence rate decreases by nearly 1%. This is the only statistically significant (p-value < 0.001) variable from our regression analysis.
+
+The residuals appear randomly distributed around zero, supporting the appropriateness of the model. However, there is slight clustering of residuals near certain predicted values, which might indicate areas where the model could be refined.
+
+This suggests that areas with a higher proportion of households facing high housing cost burdens experienced lower COVID-19 incidence rates. This could reflect the reduced mobility or interaction of people living under economic struggles, or possibly that such areas already adopted stricter public health measures.
+
+### Low R-Squared Values 
+
+Both models have quite low R-squared values (~0.35), meaning only about 35% of the variability in incidence rates is explained by the predictors. This implies other variables, such as policy measures, healthcare access, or behavioral factors were causing
+bigger impacts on COVID incidence. However, among our dataset, we can reasonably say we've identified the dominant social factors influencing COVID rates.
+
+## Mapping Our Data
+
+To visualize how these findings compare to the incidence rates, here are some
+choropleth maps.
+
+```{r echo=FALSE}
+# Map data from the `maps` package.
+states_map <- map_data("state")
+
+# We have to lower-case the states to match the maps data.
+covid_states$state <- tolower(covid_states$state)
+
+map_data <- states_map %>%
+  left_join(covid_states, by = c("region" = "state"))
+
+# Incidence Rate Map
+map_incidence <- ggplot(map_data, aes(long, lat, group = group, fill = IncidenceRate)) +
+  geom_polygon(color = "white") +
+  coord_fixed(1.3) +
+  scale_fill_gradient(low = "blue", high = "red", na.value = "grey") +
+  labs(title = "COVID-19 Incidence Rate", fill = "Incidence Rate") +
+  theme_void()
+
+# Under17 map
+map_age17 <- ggplot(map_data, aes(long, lat, group = group, fill = pct_e_age17)) +
+  geom_polygon(color = "white") +
+  coord_fixed(1.3) +
+  scale_fill_gradient(low = "yellow", high = "red", na.value = "grey") +
+  labs(fill = "Age < 17") +
+  theme_void() 
+
+# Housing burden map
+map_hburd <- ggplot(map_data, aes(long, lat, group = group, fill = pct_e_hburd)) +
+  geom_polygon(color = "white") +
+  coord_fixed(1.3) +
+  scale_fill_gradient(low = "blue", high = "green", na.value = "grey") +
+  labs(fill = "Housing Burden") +
+  theme_void()
+
+# Combining the plots side by side
+incidence_and_17 <- (map_incidence + map_age17) +
+  plot_annotation(
+    title = "2020 COVID-19 Incidence Rates (%) and Population Under Age 17 (%)",
+    theme = theme(plot.title = element_text(size = 12, hjust = 0.5))
+  )
+
+
+incidence_and_hburd <- (map_incidence + map_hburd) +
+  plot_annotation(
+    title = "2020 COVID-19 Incidence Rates(%) and Population with High Housing Burden (%) ",
+    theme = theme(plot.title = element_text(size = 12, hjust = 0.5))
+  )
+
+# Print the combined maps
+incidence_and_17
+incidence_and_hburd
+```
+
+## County Level Analysis
+
+To determine whether the social factors identified at the state level remain significant at more granular levels, I analyzed county-level data. By examining relationships at the county level, we can validate the bigger patterns observed and explore whether these factors maintain their influence when accounting for more local dynamics.
+
+The analysis remains quite similar to the state-level analysis.
+
+```{r County Data Cleaning and Preparation, message=FALSE}
+covid_counties <- read_csv("us-counties-all.csv")   
+svi <- read_csv("svi_interactive_map_2020.csv")      
+
+# Filter the COVID data for cases in 2020 only, then pick the totals (end of year).
+
+covid_counties_2020 <- covid_counties %>%
+  filter(year(date) == 2020)
+
+covid_counties_2020 <- covid_counties_2020 %>%
+  group_by(county) %>%
+  filter(date == max(date)) %>%
+  ungroup()
+
+# Creating our combined dataset. Joining by both county and state as different 
+# states may have counties with the same name.
+
+
+colnames(svi) <- tolower(colnames(svi))
+
+covid_counties_final <- covid_counties_2020 %>%
+  left_join(svi, by = c("county", "state"))
+
+
+# Creating a column for incidence rates by county. 
+
+covid_counties_final <- covid_counties_final %>%
+  dplyr::mutate(County_IR = (cases / e_totpop) * 100)
+
+
+# Selecting the percentages and our County_IR column to analyze.
+# As mentioned earlier, the SVI data came with percentages of their variables by
+# county, which we can now make use of.
+
+county_correlation_data <- covid_counties_final %>%
+  dplyr::select(County_IR, starts_with("ep_"))
+```
+
+
+```{r CountyCorrs, message=FALSE}
+
+# Calculating the correlation matrix.
+
+county_correlation_matrix <- cor(county_correlation_data, use = "pairwise.complete.obs")
+
+# To see our strongest correlations, we'll now take the matrix data and turn it
+# into a table which we can easily sort and display.
+
+county_correlation_long <- as.data.frame(as.table(county_correlation_matrix))
+top_county_correlations <- county_correlation_long %>%
+  filter(Var1 == "County_IR" & Var2 != "County_IR") %>%
+  arrange(desc(abs(Freq))) %>%  
+  slice_head(n = 10)  
+
+```
+
+
+```{r CountyCorrTable, knitr::kable, echo=FALSE}
+
+knitr::kable(top_county_correlations[1:10, 1:3],
+             caption = "Top 10 County-Level Correlations to Incidence Rates",
+             digits=2) 
+```
+
+County-level analysis supports the conclusions drawn at the state level, with overlapping factors such as younger populations (`ep_age17`) and housing burdens (`ep_hburd`) showing consistent correlations. 
+
+However, the relationships are generally weaker at the county level, signifying more variability coming from localized dynamics.
+
+Also, the rise of new factors like `ep_groupq` highlights even more complexity added
+among finer levels of investigation.
+
+# Summary
+
+This project focused on exploring how social factors influenced COVID-19 incidence rates during 2020, focusing on identifying the strongest predictors at both state and county levels.
+
+To address this, the Social Vulnerability Index (SVI) data from the CDC was combined with COVID-19 case data at state and county levels. Correlation analyses identified the strongest relationships between social factors and incidence rates, while multiple regression models were used to control for confounding variables and refine the insights.
+
+My analysis found that the percentage of the population under 17 (`pct_e_age17`) and the percentage of households with high housing burdens (`pct_e_hburd`) were the strongest social factors. Younger populations were associated with higher incidence rates, likely due to increased mobility and larger household sizes. High housing burdens correlated with lower rates, possibly due to lower mobility or stricter adherence to public health measures in poorer areas.
+
+The findings showcase critical vulnerabilities that shaped the pandemic’s spread, emphasizing the need for targeted public health strategies. Specific interventions focusing on demographic risk factors, like younger populations, can help mitigate future health crises.
+
+The modest R-squared values indicate that many other factors, such as public health policies and healthcare infrastructure, were not accounted for in this analysis. Future work could incorporate these variables and explore alternative modeling techniques to better capture the complex dynamics at play. Additionally, temporal analyses could reveal how these factors evolved over the course of the pandemic.
+
+
+
+
